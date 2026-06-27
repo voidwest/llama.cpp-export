@@ -49,6 +49,8 @@ struct llama_cparams {
 
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 
+    bool output_layer_out;       // extract per-layer hidden states (block output after residual) during decode
+
     enum llama_context_type ctx_type;
     enum llama_pooling_type pooling_type;
 

@@ -114,6 +114,17 @@ LLAMA_API void llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
 LLAMA_API float * llama_get_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid);
 
+// Set whether the context outputs per-layer hidden states during decode.
+LLAMA_API void llama_set_output_layer_out(struct llama_context * ctx, bool value);
+
+// Get the per-layer output hidden state buffer. Returns a flat f32 array of shape [n_layers * n_embd],
+// one row per layer (layer 0 first). Returns NULL if output_layer_out was not enabled before decode.
+LLAMA_API float * llama_get_embeddings_layer_out(struct llama_context * ctx);
+
+// Write the per-layer output hidden states to a binary file (native-endian f32, flat [n_layers, n_embd]).
+// Returns true on success.
+LLAMA_API bool llama_save_output_layer_out(struct llama_context * ctx, const char * path);
+
 LLAMA_API llama_context * llama_get_ctx_other(struct llama_context * ctx);
 
 //

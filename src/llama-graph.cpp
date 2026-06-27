@@ -908,6 +908,8 @@ void llm_graph_result::reset() {
     t_layer_inp.resize(LLAMA_MAX_LAYERS);
     std::fill(t_layer_inp.begin(), t_layer_inp.end(), nullptr);
 
+    t_all_layers.clear();
+
     t_sampled.clear();
     t_sampled_probs.clear();
     t_sampled_logits.clear();
@@ -955,6 +957,13 @@ void llm_graph_result::set_outputs(const llm_graph_params & params) {
             if (embeddings_layer_inp[il]) {
                 GGML_ASSERT(t_layer_inp[il] != nullptr && "layer input tensor is null");
                 ggml_set_output(t_layer_inp[il]);
+            }
+        }
+    }
+    {
+        for (auto * t : t_all_layers) {
+            if (t != nullptr) {
+                ggml_set_output(t);
             }
         }
     }
@@ -1071,6 +1080,9 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     }
 
 void llm_graph_context::cb(ggml_tensor * cur, const char * name, int il) const {
+    if (cparams.output_layer_out && strcmp(name, "l_out") == 0) {
+        res->t_all_layers.push_back(cur);
+    }
     if (cb_func) {
         cb_func(ubatch, cur, name, il);
     }

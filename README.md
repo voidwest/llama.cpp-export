@@ -19,6 +19,7 @@ LLM inference in C/C++
 
 ## Hot topics
 
+- **Per-layer hidden state dumping is now a built-in feature.** Use `llama_set_output_layer_out(ctx, true)` before decode and `llama_save_output_layer_out(ctx, path)` to dump per-layer hidden states (block output after residual) in a flat f32 binary format compatible with [gguf-parity-tools](https://github.com/voidwest/gguf-parity-tools). See [docs/llamacpp-layer-dump.md](docs/llamacpp-layer-dump.md). No manual patching required.
 - **Hugging Face cache migration: models downloaded with `-hf` are now stored in the standard Hugging Face cache directory, enabling sharing with other HF tools.**
 - **[guide : using the new WebUI of llama.cpp](https://github.com/ggml-org/llama.cpp/discussions/16938)**
 - [guide : running gpt-oss with llama.cpp](https://github.com/ggml-org/llama.cpp/discussions/15396)

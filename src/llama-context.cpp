@@ -14,6 +14,7 @@
 
 #include <cinttypes>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -73,6 +74,8 @@ llama_context::llama_context(
 
     cparams.embeddings_layer_inp.resize(hparams.n_layer(), false);
     embd_layer_inp.resize(hparams.n_layer());
+
+    cparams.output_layer_out = false;
 
     cparams.ctx_type     = params.ctx_type;
     cparams.pooling_type = params.pooling_type;
@@ -958,6 +961,43 @@ float * llama_context::get_embeddings_layer_inp(uint32_t lid) {
     return embd_layer_inp[lid].data;
 }
 
+float * llama_context::get_embeddings_layer_out() {
+    output_reorder();
+
+    if (!embd_layer_out.has_data()) {
+        return nullptr;
+    }
+
+    return embd_layer_out.data;
+}
+
+bool llama_context::save_output_layer_out(const char * path) {
+    output_reorder();
+
+    if (!embd_layer_out.has_data()) {
+        LLAMA_LOG_ERROR("%s: no layer output data; set output_layer_out before decode\n", __func__);
+        return false;
+    }
+
+    FILE * fp = fopen(path, "wb");
+    if (!fp) {
+        LLAMA_LOG_ERROR("%s: failed to open %s\n", __func__, path);
+        return false;
+    }
+
+    const size_t n = embd_layer_out.size;
+    const size_t written = fwrite(embd_layer_out.data, sizeof(float), n, fp);
+    fclose(fp);
+
+    if (written != n) {
+        LLAMA_LOG_ERROR("%s: failed to write layer output to %s (wrote %zu of %zu floats)\n", __func__, path, written, n);
+        return false;
+    }
+
+    LLAMA_LOG_INFO("%s: wrote %zu floats (%zu bytes) to %s\n", __func__, n, n * sizeof(float), path);
+    return true;
+}
+
 llama_token llama_context::get_sampled_token_ith(int32_t idx) {
     output_reorder();
 
@@ -1153,6 +1193,11 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
     cparams.embeddings_layer_inp[lid] = enable;
 
     // note: without this reserve, the draft acceptance drops to zero. not sure why - this is unexpected
+    sched_need_reserve = true;
+}
+
+void llama_context::set_output_layer_out(bool value) {
+    cparams.output_layer_out = value;
     sched_need_reserve = true;
 }
 
@@ -1963,6 +2008,34 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
         extract_layer_inputs(res, n_tokens_prev, ubatch.n_tokens);
 
+        // extract per-layer output hidden states (block output after residual)
+        // writes the last-token row from each layer to embd_layer_out, overwriting previous ubatch data.
+        if (cparams.output_layer_out && embd_layer_out.data && !res->t_all_layers.empty()) {
+            const uint32_t n_layer = (uint32_t) res->t_all_layers.size();
+            const uint32_t n_embd  = hparams.n_embd;
+
+            GGML_ASSERT((size_t) n_layer * n_embd <= embd_layer_out.size);
+
+            for (uint32_t il = 0; il < n_layer; ++il) {
+                ggml_tensor * t = res->t_all_layers[il];
+                if (!t) {
+                    continue;
+                }
+                ggml_backend_t backend = ggml_backend_sched_get_tensor_backend(sched.get(), t);
+                GGML_ASSERT(backend != nullptr);
+
+                // t is [n_embd, n_tokens]; read the last token's row
+                const size_t n_tokens_t  = t->ne[1];
+                const size_t src_offset  = (n_tokens_t - 1) * n_embd;
+                const size_t dst_offset  = (size_t) il * n_embd;
+
+                ggml_backend_tensor_get_async(backend, t,
+                        embd_layer_out.data + dst_offset,
+                        src_offset * sizeof(float),
+                        n_embd * sizeof(float));
+            }
+        }
+
         // extract nextn embeddings before
         // only meaningful in LLAMA_POOLING_TYPE_NONE (per-token); other pooling modes are ignored.
         {
@@ -2100,6 +2173,11 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
         }
     }
 
+    size_t embd_layer_out_float_count = 0;
+    if (cparams.output_layer_out) {
+        embd_layer_out_float_count = (size_t) hparams.n_layer() * n_embd;
+    }
+
     // Allocate backend sampling output buffers if there are backend samplers configured.
     const bool has_sampling = !sampling.samplers.empty();
     if (has_sampling) {
@@ -2114,7 +2192,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     const size_t prev_size = buf_output ? ggml_backend_buffer_get_size(buf_output.get()) : 0;
     const size_t new_size  =
-        (logits.size + embd.size + embd_nextn.size + embd_layer_inp_float_count + backend_float_count) * sizeof(float) +
+        (logits.size + embd.size + embd_nextn.size + embd_layer_inp_float_count + embd_layer_out_float_count + backend_float_count) * sizeof(float) +
         (                                                                         backend_token_count) * sizeof(llama_token);
 
     // alloc only when more than the current capacity is required
@@ -2135,6 +2213,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
             for (auto & layer_inp : embd_layer_inp) {
                 layer_inp = {nullptr, 0};
             }
+            embd_layer_out = {nullptr, 0};
         }
 
         auto * buft = ggml_backend_cpu_buffer_type();
@@ -2173,6 +2252,14 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
         } else {
             embd_layer_inp[il] = buffer_view<float>{nullptr, 0};
         }
+    }
+
+    {
+        const size_t layer_out_count = cparams.output_layer_out ? (size_t) hparams.n_layer() * n_embd : 0;
+        embd_layer_out = layer_out_count > 0
+            ? buffer_view<float>{(float *) (base + offset), layer_out_count}
+            : buffer_view<float>{nullptr, 0};
+        offset += embd_layer_out.size * sizeof(float);
     }
 
     if (has_sampling) {
@@ -3703,6 +3790,10 @@ void llama_set_embeddings_layer_inp(llama_context * ctx, uint32_t lid, bool valu
     ctx->set_embeddings_layer_inp(lid, value);
 }
 
+void llama_set_output_layer_out(llama_context * ctx, bool value) {
+    ctx->set_output_layer_out(value);
+}
+
 void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
     ctx->set_nextn_layer_offset(offset);
 }
@@ -3731,6 +3822,18 @@ float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
     ctx->synchronize();
 
     return ctx->get_embeddings_layer_inp(lid);
+}
+
+float * llama_get_embeddings_layer_out(llama_context * ctx) {
+    ctx->synchronize();
+
+    return ctx->get_embeddings_layer_out();
+}
+
+bool llama_save_output_layer_out(llama_context * ctx, const char * path) {
+    ctx->synchronize();
+
+    return ctx->save_output_layer_out(path);
 }
 
 bool llama_set_sampler(llama_context * ctx, llama_seq_id seq_id, llama_sampler * smpl) {

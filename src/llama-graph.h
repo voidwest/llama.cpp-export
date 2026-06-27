@@ -745,6 +745,8 @@ public:
 
     std::vector<ggml_tensor *> t_layer_inp;
 
+    std::vector<ggml_tensor *> t_all_layers; // per-layer block outputs (l_out), populated when cparams.output_layer_out is enabled
+
     std::map<llama_seq_id, ggml_tensor *> t_sampled_logits;
     std::map<llama_seq_id, ggml_tensor *> t_candidates;
     std::map<llama_seq_id, ggml_tensor *> t_sampled;
