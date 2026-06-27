@@ -76,13 +76,19 @@ fi
 
 echo "=== Step 7: gguf-parity-tools self-parity ==="
 # Requires: pip install git+https://github.com/voidwest/gguf-parity-tools.git
-gguf-parity compare-layers \
+# Ensures ~/.local/bin is on PATH (pip --user installs there)
+export PATH="${HOME}/.local/bin:${PATH}"
+if ! command -v gguf-parity >/dev/null 2>&1 ; then
+    echo "SKIP: gguf-parity not found on PATH; install with: pip install git+https://github.com/voidwest/gguf-parity-tools.git"
+else
+    gguf-parity compare-layers \
     --candidate "${OUT_DIR}/qwen3_0_6b_hello_layers.bin" \
     --reference "${OUT_DIR}/qwen3_0_6b_hello_layers.bin" \
     --layers 28 \
     --hidden-size 1024 \
     --out "${OUT_DIR}/qwen3_self_report"
-echo "Expected: status=pass, cosine=1.0, max_abs_diff=0.0"
+    echo "Expected: status=pass, cosine=1.0, max_abs_diff=0.0"
+fi
 
 echo "=== Step 8: Verify file sizes ==="
 python3 -c "
